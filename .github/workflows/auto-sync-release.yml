@@ -4,11 +4,18 @@ on:
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Build and publish even when upstream has not changed'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
     paths:
       - '.github/workflows/auto-sync-release.yml'
       - '.github/scripts/sync-upstream.sh'
+      - '.github/scripts/ci-build-fixes.py'
 
 permissions:
   contents: write
@@ -40,7 +47,7 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: sync
-    if: needs.sync.outputs.changed == 'true'
+    if: needs.sync.outputs.changed == 'true' || github.event_name == 'push' || inputs.force_build == true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -53,12 +60,19 @@ jobs:
             runner: windows-2022
     env:
       SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
     steps:
       - name: Check out mirrored upstream
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.sync.outputs.mirror_sha }}
           submodules: recursive
+
+      # Fix only the build workspace; keep the GitHub mirror identical to upstream.
+      - name: Apply verified upstream compiler fixes
+        shell: bash
+        run: python .github/scripts/ci-build-fixes.py
 
       - name: Install Linux prerequisites
         if: matrix.platform == 'linux-x86_64'
@@ -119,12 +133,17 @@ jobs:
           restore-keys: |
             cpm-${{ runner.os }}-
 
+      - name: Set up compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure Linux
         if: matrix.platform == 'linux-x86_64'
         shell: bash
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DBUILD_TESTING=OFF
           -DYUZU_TESTS=OFF
           -DYUZU_CMD=ON
@@ -144,6 +163,8 @@ jobs:
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DBUILD_TESTING=OFF
           -DYUZU_TESTS=OFF
           -DYUZU_CMD=ON
@@ -157,6 +178,14 @@ jobs:
       - name: Build emulator and CLI
         shell: bash
         run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+
+      - name: Show compiler cache statistics
+        if: always()
+        shell: bash
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats
+          fi
 
       - name: Package Windows portable ZIP
         if: matrix.platform == 'windows-x86_64'
@@ -218,7 +247,7 @@ jobs:
   release:
     name: Publish GitHub pre-release
     needs: [sync, build]
-    if: needs.sync.outputs.changed == 'true' && needs.build.result == 'success'
+    if: needs.build.result == 'success' && (needs.sync.outputs.changed == 'true' || github.event_name == 'push' || inputs.force_build == true)
     runs-on: ubuntu-24.04
     permissions:
       contents: write

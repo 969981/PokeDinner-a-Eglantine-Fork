@@ -7,6 +7,7 @@ UPSTREAM_BRANCH="master"
 STATUS_FILE=".github/sync/upstream-head.sha"
 CONTROL_WORKFLOW=".github/workflows/auto-sync-release.yml"
 CONTROL_SCRIPT=".github/scripts/sync-upstream.sh"
+CONTROL_FIXES=".github/scripts/ci-build-fixes.py"
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -28,6 +29,7 @@ trap 'rm -rf "$overlay"' EXIT
 mkdir -p "$overlay/.github/workflows" "$overlay/.github/scripts"
 cp "$CONTROL_WORKFLOW" "$overlay/$CONTROL_WORKFLOW"
 cp "$CONTROL_SCRIPT" "$overlay/$CONTROL_SCRIPT"
+cp "$CONTROL_FIXES" "$overlay/$CONTROL_FIXES"
 
 # The read-tree operation changes the index and working tree, but not HEAD.
 # It produces normal descendant commits and never force-pushes the local branch.
@@ -35,6 +37,7 @@ git read-tree --reset -u FETCH_HEAD
 mkdir -p ".github/workflows" ".github/scripts" ".github/sync"
 cp "$overlay/$CONTROL_WORKFLOW" "$CONTROL_WORKFLOW"
 cp "$overlay/$CONTROL_SCRIPT" "$CONTROL_SCRIPT"
+cp "$overlay/$CONTROL_FIXES" "$CONTROL_FIXES"
 # Keep upstream Forgejo workflows in .forgejo/, but do not import its separate
 # GitHub Actions workflows: GitHub App tokens cannot create/update those files.
 find .github/workflows -maxdepth 1 -type f ! -name "auto-sync-release.yml" -delete
