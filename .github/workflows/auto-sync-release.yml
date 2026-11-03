@@ -1,0 +1,259 @@
+name: PokeDinner - upstream sync and release
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/auto-sync-release.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pokedinner-forgejo-sync-and-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Check and mirror Forgejo master
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.mirror.outputs.changed }}
+      source_sha: ${{ steps.mirror.outputs.source_sha }}
+      mirror_sha: ${{ steps.mirror.outputs.mirror_sha }}
+    steps:
+      - name: Check out GitHub main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Mirror only when upstream SHA changes
+        id: mirror
+        shell: bash
+        run: bash .github/scripts/sync-upstream.sh
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: windows-x86_64
+            runner: windows-2022
+    env:
+      SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+    steps:
+      - name: Check out mirrored upstream
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.mirror_sha }}
+          submodules: recursive
+
+      - name: Install Linux prerequisites
+        if: matrix.platform == 'linux-x86_64'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
+            mesa-common-dev nasm ninja-build qt6-base-private-dev \
+            qt6-charts-dev qt6-tools-dev libavfilter-dev libavcodec-dev \
+            libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
+            spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev
+
+      - name: Qt 6.8.3 on Linux
+        if: matrix.platform == 'linux-x86_64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+
+      - name: Set up MSVC
+        if: matrix.platform == 'windows-x86_64'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Qt 6.8.3 on Windows
+        if: matrix.platform == 'windows-x86_64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Vulkan SDK on Windows
+        if: matrix.platform == 'windows-x86_64'
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Check Vulkan SDK on Windows
+        if: matrix.platform == 'windows-x86_64'
+        shell: pwsh
+        run: glslangValidator --version
+
+      - name: Cache CMake dependencies
+        uses: actions/cache@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-${{ runner.os }}-
+
+      - name: Configure Linux
+        if: matrix.platform == 'linux-x86_64'
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DVulkanHeaders_FORCE_BUNDLED=ON
+          -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+
+      - name: Configure Windows
+        if: matrix.platform == 'windows-x86_64'
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+
+      - name: Build emulator and CLI
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+
+      - name: Package Windows portable ZIP
+        if: matrix.platform == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/release/bin/$exe")) {
+              throw "Missing build/release/bin/$exe"
+            }
+          }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $short = $env:SOURCE_SHA.Substring(0,12)
+          Compress-Archive -Path build/release/bin/* -DestinationPath "out/pokedinner-$short-windows-x86_64.zip" -Force
+
+      - name: Package Linux tarball and AppImage
+        if: matrix.platform == 'linux-x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x build/release/bin/eglantine
+          test -x build/release/bin/eden-cli
+          mkdir -p out
+          short="${SOURCE_SHA:0:12}"
+          tar -C build/release/bin -czf "out/pokedinner-$short-linux-x86_64.tar.gz" eglantine eden-cli
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1
+          mkdir -p "$RUNNER_TEMP/linuxdeploy"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/linuxdeploy/linuxdeploy-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/linuxdeploy/linuxdeploy-plugin-qt-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/linuxdeploy/"*.AppImage
+          cp dist/Eglantine.png "$RUNNER_TEMP/dev.eglantine.eglantine.png"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export OUTPUT="pokedinner-$short-linux-x86_64.AppImage"
+          "$RUNNER_TEMP/linuxdeploy/linuxdeploy-x86_64.AppImage" \
+            --appdir AppDir \
+            --executable build/release/bin/eglantine \
+            --executable build/release/bin/eden-cli \
+            --desktop-file dist/dev.eden_emu.eden.desktop \
+            --icon-file "$RUNNER_TEMP/dev.eglantine.eglantine.png" \
+            --plugin qt --output appimage
+          test -s "$OUTPUT"
+          mv "$OUTPUT" out/
+
+      - name: Upload platform archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokedinner-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish GitHub pre-release
+    needs: [sync, build]
+    if: needs.sync.outputs.changed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+      MIRROR_SHA: ${{ needs.sync.outputs.mirror_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download complete build outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pokedinner-*
+          path: artifacts
+
+      - name: Publish versioned release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f \( -name '*.zip' -o -name '*.AppImage' -o -name '*.tar.gz' \) -exec cp -t dist {} +
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -ge 3
+          tag="pokedinner-${SOURCE_SHA:0:12}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$MIRROR_SHA" \
+              --prerelease \
+              --title "PokeDinner ${SOURCE_SHA:0:12} (Windows + Linux)" \
+              --notes "Automatic build of Franseven/PokeDinner-a-Eglantine-Fork master.
+
+          Forgejo upstream commit: $SOURCE_SHA
+          GitHub mirror commit: $MIRROR_SHA
+
+          Windows x64: download and extract the ZIP, then run eglantine.exe.
+          Linux x64: use the AppImage (glibc 2.39+) or tar.gz (requires system libraries).
+          Unofficial automated builds; do not confuse them with upstream releases."
+          fi
