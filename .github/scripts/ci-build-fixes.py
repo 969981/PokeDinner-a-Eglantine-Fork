@@ -30,9 +30,15 @@ def main() -> None:
         "src/video_core/texture_cache/util.cpp",
         """    const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
     const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
-    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);""",
+    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
+    const u32 layer_stride = AlignLayerSize(layer_size, info.size, level_info.block, tile_size.height,
+                                            info.tile_width_spacing);
+    // Tiles across one GOB (64 bytes). Runs of blocks are unswizzled one GOB aligned: tile width""",
         """    const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
-    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);""",
+    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
+    const u32 layer_stride = AlignLayerSize(layer_size, info.size, level_info.block, tile_size.height,
+                                            info.tile_width_spacing);
+    // Tiles across one GOB (64 bytes). Runs of blocks are unswizzled one GOB aligned: tile width""",
     )
 
     # MSVC C4457 at lower_to_maxwell.h:1304: a local tensor_mode shadows
