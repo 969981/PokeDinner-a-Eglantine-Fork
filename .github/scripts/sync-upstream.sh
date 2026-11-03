@@ -35,6 +35,9 @@ git read-tree --reset -u FETCH_HEAD
 mkdir -p ".github/workflows" ".github/scripts" ".github/sync"
 cp "$overlay/$CONTROL_WORKFLOW" "$CONTROL_WORKFLOW"
 cp "$overlay/$CONTROL_SCRIPT" "$CONTROL_SCRIPT"
+# Keep upstream Forgejo workflows in .forgejo/, but do not import its separate
+# GitHub Actions workflows: GitHub App tokens cannot create/update those files.
+find .github/workflows -maxdepth 1 -type f ! -name "auto-sync-release.yml" -delete
 printf '%s\n' "$new_sha" > "$STATUS_FILE"
 git add -A
 if ! git diff --cached --quiet; then
