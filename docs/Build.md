@@ -23,7 +23,7 @@ First, you must [install some dependencies](Deps.md).
 Next, you will want to clone Eglantine via the terminal:
 
 ```sh
-git clone https://github.com/Djihads80/Eglantine.git
+git clone https://github.com/Eglantine-Community/Eglantine.git
 cd Eglantine
 ```
 
