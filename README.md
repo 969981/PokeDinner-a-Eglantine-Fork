@@ -59,7 +59,7 @@ For information on provided development tooling, see the [Tools directory](./too
 
 ## Download
 
-You can download the latest releases from [here](https://github.com/Djihads80/Eglantine/releases).
+You can download the latest releases from [here](https://github.com/Eglantine-Community/Eglantine/releases).
 
 ## Support
 
@@ -69,4 +69,4 @@ If you would prefer to support us in a different way, please join our [Discord](
 
 ## License
 
-Eglantine is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://github.com/Djihads80/Eglantine/blob/nx2/LICENSE.txt) file.
+Eglantine is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://github.com/Eglantine-Community/Eglantine/blob/nx2/LICENSE.txt) file.
